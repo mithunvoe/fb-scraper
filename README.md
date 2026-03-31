@@ -13,7 +13,6 @@ It uses browser automation to navigate Facebook's Photos tab, click each photo t
 - SHA-256 deduplication (no duplicate images)
 - Anti-detection measures (stealth patches, human-like delays)
 - Works with both Facebook **pages** and **groups**
-- Docker support for headless operation
 
 ## Prerequisites
 
@@ -119,25 +118,6 @@ scraped_images/
 
 Images are saved immediately as they're downloaded. Each page/group gets its own subdirectory.
 
-## Docker
-
-Build the image:
-
-```bash
-docker build -t fb-scraper .
-```
-
-Run with Docker (headless mode, requires cookies from a prior local login):
-
-```bash
-docker run --rm \
-  -v $(pwd)/scraped_images:/app/scraped_images \
-  -v $(pwd)/.fb_cookies.json:/app/.fb_cookies.json \
-  fb-scraper https://www.facebook.com/SomePage
-```
-
-> You must run the scraper locally first to generate `.fb_cookies.json` via manual login. Docker runs in headless mode and cannot display a browser window for login.
-
 ## How It Works
 
 1. **Authentication**: Loads saved cookies or prompts for manual login
@@ -154,8 +134,6 @@ docker run --rm \
 **Too few images found**: Increase `--scroll-count` (default 50). Some pages have thousands of photos that require more scrolling.
 
 **Facebook blocks or rate-limits**: Reduce workers with `-w 2` and increase scroll delay by waiting longer between runs.
-
-**Docker: "Not logged in"**: You must generate `.fb_cookies.json` locally first (run without Docker, log in, then use the cookies file with Docker).
 
 ## License
 
