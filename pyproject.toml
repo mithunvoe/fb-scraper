@@ -1,0 +1,18 @@
+[project]
+name = "fb-scraper"
+version = "0.1.0"
+description = "Facebook page image scraper for ML dataset collection"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "click>=8.3.1",
+    "playwright>=1.58.0",
+    "rich>=14.3.3",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project.scripts]
+fb-scraper = "fb_scraper.cli:main"

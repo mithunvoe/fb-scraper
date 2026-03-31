@@ -1,0 +1,22 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# Scraper data
+scraped_images/
+.fb_cookies.json
+
+# IDE
+.idea/
+.vscode/
+
+# Misc
+.ruff_cache/
+test_*.jpg
