@@ -48,6 +48,17 @@ console = Console()
     show_default=True,
 )
 @click.option(
+    "--profile/--page",
+    "is_profile",
+    default=False,
+    help=(
+        "Treat vanity URLs (e.g. facebook.com/username) as personal profiles "
+        "and use the /photos_by tab. Use when the target is a person, not a Page. "
+        "profile.php?id=... and /groups/... are detected automatically."
+    ),
+    show_default=True,
+)
+@click.option(
     "--cookies",
     type=click.Path(path_type=Path),
     default=COOKIES_FILE,
@@ -61,6 +72,7 @@ def main(
     scroll_count: int,
     workers: int,
     headless: bool,
+    is_profile: bool,
     cookies: Path,
 ) -> None:
     """Scrape images from Facebook pages for ML dataset collection.
@@ -84,6 +96,7 @@ def main(
         max_images=max_images,
         scroll_count=scroll_count,
         workers=workers,
+        profile=is_profile,
     )
 
     run_scraper(config)

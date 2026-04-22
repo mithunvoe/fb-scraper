@@ -12,6 +12,7 @@ wheels/
 # Scraper data
 scraped_images/
 .fb_cookies.json
+.fb_browser_profile/
 
 # IDE
 .idea/

@@ -4,6 +4,7 @@ from pathlib import Path
 
 DEFAULT_OUTPUT_DIR = Path("./scraped_images")
 COOKIES_FILE = Path("./.fb_cookies.json")
+USER_DATA_DIR = Path("./.fb_browser_profile")
 
 # Delay ranges (seconds) for human-like behavior
 MIN_ACTION_DELAY = 2.0
@@ -27,7 +28,9 @@ class ScrapeConfig:
     page_urls: tuple[str, ...]
     output_dir: Path = DEFAULT_OUTPUT_DIR
     cookies_file: Path = COOKIES_FILE
+    user_data_dir: Path = USER_DATA_DIR
     headless: bool = False
     max_images: int = 0  # 0 = unlimited
     scroll_count: int = 50  # max scrolls per page
     workers: int = 4  # parallel browser tabs
+    profile: bool = False  # treat vanity URLs as personal profiles (use /photos_by)

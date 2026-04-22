@@ -5,7 +5,7 @@ import hashlib
 import re
 import signal
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 from random import uniform, randint
 
 from playwright.async_api import async_playwright, Page, BrowserContext
@@ -42,18 +42,64 @@ def _setup_signal_handlers(loop: asyncio.AbstractEventLoop) -> None:
         loop.add_signal_handler(sig, handler)
 
 
+_PHOTO_TAB_RE = re.compile(r"/(photos|photos_by|photos_of|media)(/|$)")
+_SK_PHOTO_RE = re.compile(r"(^|&)sk=(photos|photos_by|photos_of|media)(&|$)")
+
+
+def _url_kind(url: str) -> str:
+    """Classify a Facebook URL as 'group', 'profile_id', 'profile_vanity', or 'page_vanity'."""
+    parsed = urlparse(url)
+    path = parsed.path.strip("/").lower()
+    segments = path.split("/") if path else []
+
+    if segments and segments[0] == "groups":
+        return "group"
+    if path == "profile.php" and "id=" in (parsed.query or ""):
+        return "profile_id"
+    return "page_vanity"
+
+
 def extract_page_name(url: str) -> str:
     parsed = urlparse(url.rstrip("/"))
     path = parsed.path.strip("/")
-    name = path.split("/")[0] if "/" in path else path
+
+    if path.lower() == "profile.php":
+        qs = parse_qs(parsed.query)
+        pid = (qs.get("id") or [""])[0]
+        if pid:
+            return f"profile_{re.sub(r'[^\w]', '', pid)}"
+
+    segments = path.split("/") if path else []
+    if len(segments) >= 2 and segments[0].lower() == "groups":
+        return f"group_{re.sub(r'[^\w\-]', '_', segments[1])}"
+
+    name = segments[0] if segments else ""
     name = re.sub(r"[^\w\-]", "_", name)
     return name or "unknown_page"
 
 
-def get_photos_tab_url(page_url: str) -> str:
+def get_photos_tab_url(page_url: str, is_profile: bool = False) -> str:
+    """Build the correct photos-tab URL for pages, profiles, and groups.
+
+    Why: Facebook profiles use /photos_by (not /photos); appending /photos
+    to a profile URL silently redirects to the viewer's own profile.
+    Groups use /media. Pages use /photos.
+    """
     url = page_url.rstrip("/")
-    if "/photos" in url:
+    parsed = urlparse(url)
+
+    if _PHOTO_TAB_RE.search(parsed.path) or _SK_PHOTO_RE.search(parsed.query or ""):
         return url
+
+    kind = _url_kind(url)
+
+    if kind == "profile_id":
+        sep = "&" if parsed.query else "?"
+        return f"{url}{sep}sk=photos_by"
+    if kind == "group":
+        return f"{url}/media"
+    if is_profile:
+        return f"{url}/photos_by"
     return f"{url}/photos"
 
 
@@ -77,14 +123,37 @@ async def dismiss_login_popup(page: Page) -> None:
         pass
 
 
+STEALTH_SCRIPT = """
+    Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+    Object.defineProperty(navigator, 'plugins', {
+        get: () => [
+            { name: 'Chrome PDF Plugin', filename: 'internal-pdf-viewer' },
+            { name: 'Chrome PDF Viewer', filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai' },
+            { name: 'Native Client', filename: 'internal-nacl-plugin' },
+        ],
+    });
+    Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
+    Object.defineProperty(navigator, 'hardwareConcurrency', { get: () => 8 });
+    Object.defineProperty(navigator, 'deviceMemory', { get: () => 8 });
+    window.chrome = window.chrome || { runtime: {} };
+    const originalQuery = window.navigator.permissions && window.navigator.permissions.query;
+    if (originalQuery) {
+        window.navigator.permissions.query = (parameters) => (
+            parameters.name === 'notifications'
+                ? Promise.resolve({ state: Notification.permission })
+                : originalQuery(parameters)
+        );
+    }
+    delete window.__playwright;
+    delete window.__pw_manual;
+    delete window.cdc_adoQpoasnfa76pfcZLmcfl_Array;
+    delete window.cdc_adoQpoasnfa76pfcZLmcfl_Promise;
+    delete window.cdc_adoQpoasnfa76pfcZLmcfl_Symbol;
+"""
+
+
 async def apply_stealth_async(page: Page) -> None:
-    await page.add_init_script("""
-        Object.defineProperty(navigator, 'webdriver', { get: () => false });
-        Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
-        Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
-        delete window.__playwright;
-        delete window.__pw_manual;
-    """)
+    await page.add_init_script(STEALTH_SCRIPT)
 
 
 # -- Auth (async versions) --
@@ -111,22 +180,43 @@ async def save_cookies_async(context: BrowserContext, cookies_file: Path) -> Non
 
 
 async def is_logged_in_async(page: Page) -> bool:
-    await page.goto("https://www.facebook.com/", wait_until="domcontentloaded", timeout=30_000)
-    await page.wait_for_timeout(3000)
-    login_form = await page.query_selector('input[name="email"]')
-    return login_form is None
+    context = page.context
+    cookies = await context.cookies("https://www.facebook.com")
+    has_c_user = any(c.get("name") == "c_user" and c.get("value") for c in cookies)
+    if not has_c_user:
+        return False
+    try:
+        await page.goto("https://www.facebook.com/", wait_until="domcontentloaded", timeout=30_000)
+    except Exception:
+        return False
+    await page.wait_for_timeout(2000)
+    if "/login" in page.url or "/checkpoint" in page.url:
+        return False
+    return await page.query_selector('input[name="email"]') is None
 
 
 async def wait_for_manual_login_async(page: Page) -> None:
-    await page.goto("https://www.facebook.com/login", wait_until="domcontentloaded", timeout=30_000)
+    try:
+        await page.goto("https://www.facebook.com/login", wait_until="domcontentloaded", timeout=30_000)
+    except Exception:
+        pass
     console.print()
     console.print("[bold yellow]Please log in to Facebook in the browser window.[/bold yellow]")
     console.print("[bold yellow]Take your time - 2FA, security checks, whatever you need.[/bold yellow]")
     console.print()
     console.print("[bold cyan]>>> Press ENTER here in the terminal when you are fully logged in <<<[/bold cyan]")
     console.print()
-    await asyncio.get_event_loop().run_in_executor(None, input)
-    console.print("[green]Login confirmed![/green]")
+
+    while True:
+        await asyncio.to_thread(input)
+        cookies = await page.context.cookies("https://www.facebook.com")
+        if any(c.get("name") == "c_user" and c.get("value") for c in cookies):
+            console.print("[green]Login confirmed![/green]")
+            return
+        console.print(
+            "[yellow]Not logged in yet (no session cookie detected). "
+            "Finish login in the browser, then press ENTER again.[/yellow]"
+        )
 
 
 # -- Discovery --
@@ -285,7 +375,6 @@ async def worker(
     task_id,
 ) -> None:
     page = await context.new_page()
-    await apply_stealth_async(page)
 
     try:
         await page.goto(photos_url, wait_until="domcontentloaded", timeout=60_000)
@@ -342,7 +431,7 @@ async def scrape_page(
     config: ScrapeConfig,
 ) -> None:
     page_name = extract_page_name(page_url)
-    photos_url = get_photos_tab_url(page_url)
+    photos_url = get_photos_tab_url(page_url, is_profile=config.profile)
 
     console.rule(f"[bold]Scraping: {page_name}[/bold]")
     console.print(f"URL: {photos_url}")
@@ -410,33 +499,46 @@ async def async_main(config: ScrapeConfig) -> None:
     console.print(f"Workers: {config.workers}")
     console.print()
 
+    config.user_data_dir.mkdir(parents=True, exist_ok=True)
+
     async with async_playwright() as pw:
-        browser = await pw.chromium.launch(
+        launch_kwargs = dict(
+            user_data_dir=str(config.user_data_dir),
             headless=config.headless,
+            viewport={"width": VIEWPORT_WIDTH, "height": VIEWPORT_HEIGHT},
+            locale="en-US",
             args=[
                 "--disable-blink-features=AutomationControlled",
+                "--disable-features=IsolateOrigins,site-per-process",
                 "--no-first-run",
                 "--no-default-browser-check",
+                "--password-store=basic",
+                "--use-mock-keychain",
             ],
+            ignore_default_args=["--enable-automation"],
         )
-        context = await browser.new_context(
-            viewport={"width": VIEWPORT_WIDTH, "height": VIEWPORT_HEIGHT},
-            user_agent=(
-                "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-                "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
-            ),
-            locale="en-US",
-        )
-        main_page = await context.new_page()
-        await apply_stealth_async(main_page)
+        try:
+            context = await pw.chromium.launch_persistent_context(
+                channel="chrome", **launch_kwargs
+            )
+        except Exception:
+            console.print("[yellow]System Chrome not available, using bundled Chromium[/yellow]")
+            context = await pw.chromium.launch_persistent_context(**launch_kwargs)
 
-        # Auth
-        cookies_loaded = await load_cookies_async(context, config.cookies_file)
-        if cookies_loaded and await is_logged_in_async(main_page):
-            console.print("[green]Already logged in via saved cookies[/green]")
+        await context.add_init_script(STEALTH_SCRIPT)
+
+        main_page = context.pages[0] if context.pages else await context.new_page()
+
+        # Auth: persistent profile keeps session; cookies file is a fallback import.
+        if await is_logged_in_async(main_page):
+            console.print("[green]Already logged in via persistent profile[/green]")
         else:
-            await wait_for_manual_login_async(main_page)
-            await save_cookies_async(context, config.cookies_file)
+            cookies_loaded = await load_cookies_async(context, config.cookies_file)
+            if cookies_loaded and await is_logged_in_async(main_page):
+                console.print("[green]Already logged in via saved cookies[/green]")
+            else:
+                await wait_for_manual_login_async(main_page)
+                await save_cookies_async(context, config.cookies_file)
 
         # Scrape
         for page_url in config.page_urls:
@@ -453,7 +555,7 @@ async def async_main(config: ScrapeConfig) -> None:
 
         saved = len(list(config.output_dir.rglob("*.*"))) if config.output_dir.exists() else 0
         console.print(f"\n[bold green]All done! Total images on disk: {saved}[/bold green]")
-        await browser.close()
+        await context.close()
 
 
 def run_scraper(config: ScrapeConfig) -> None:
